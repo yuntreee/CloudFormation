@@ -1,0 +1,189 @@
+Parameters:
+  KeyName:
+    Description: Key
+    Type: AWS::EC2::KeyPair::KeyName
+  
+Resources:
+  # VPC 생성
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: VPC
+
+  # Public SN 생성
+  PublicSN:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-SN
+      VpcId: !Ref VPC
+
+  # Private SN 생성
+  PrivateSN:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 2, !GetAZs '' ]
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: Private-SN
+      VpcId: !Ref VPC
+
+  # IGW 생성
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IGW
+
+  # VPC에 IGW 연결
+  AttachIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref IGW
+      VpcId: !Ref VPC
+
+  # NAT GW 생성
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NATGW:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIP.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref PublicSN
+  
+  # 퍼블릭, 프라이빗 라우팅 테이블 생성
+  PublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Public-RT
+      VpcId: !Ref VPC
+  
+  PrivateRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Private-RT
+      VpcId: !Ref VPC
+
+  # 라우팅 테이블을 서브넷에 연결
+  PublicRouteAssociate:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRT
+      SubnetId: !Ref PublicSN
+
+  PrivaetRouteAssociate:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRT
+      SubnetId: !Ref PrivateSN
+
+  # 라우팅 생성
+  IGWRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+      RouteTableId: !Ref PublicRT
+
+  NATRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGW
+      RouteTableId: !Ref PrivateRT
+
+
+
+  # 보안그룹 생성
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG
+      GroupName: SG
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+      VpcId: !Ref VPC
+
+
+  # Public EC2 생성
+  PublicEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        # eth 0
+        - DeviceIndex: 0
+          SubnetId: !Ref PublicSN
+          GroupSet: 
+            - !Ref SG
+          # 퍼블릭IP 활성화
+          AssociatePublicIpAddress: true
+      Tags:
+        - Key: Name
+          Value: Public-EC2
+
+  # Private EC2 생성
+  PrivateEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        # eth 0
+        - DeviceIndex: 0
+          SubnetId: !Ref PrivateSN
+          GroupSet: 
+            - !Ref SG
+          # 퍼블릭IP 비활성화
+          AssociatePublicIpAddress: false
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            (
+            echo "qwe123"
+            echo "qwe123"
+            ) | passwd --stdin root
+            sed -i "s/^PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config
+            sed -i "s/^#PermitRootLogin yes/PermitRootLogin yes/g" /etc/ssh/sshd_config
+            service sshd restart
+      Tags:
+        - Key: Name
+          Value: Private-EC2
