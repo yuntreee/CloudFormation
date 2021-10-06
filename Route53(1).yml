@@ -1,0 +1,399 @@
+Parameters: 
+  KeyName:
+    Description: key 
+    Type: AWS::EC2::KeyPair::KeyName
+
+Resources:
+# VPC 생성
+  ELBVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: ELB-VPC
+
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 20.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: My-VPC
+
+# 서브넷 생성
+  ELBPublicSN1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref ELBVPC
+      Tags:
+        - Key: Name
+          Value: ELB-Public-SN1
+
+  ELBPublicSN2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 2, !GetAZs '' ]
+      CidrBlock: 10.0.1.0/24
+      VpcId: !Ref ELBVPC
+      Tags:
+        - Key: Name
+          Value: ELB-Public-SN2
+  
+  MyPublicSN:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 20.0.0.0/24
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: My-Public-SN
+
+# IGW 생성  
+  ELBIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ELB-IGW
+
+  MyIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: My-IGW
+
+# ELB-IGW VPC Attach
+  ELBIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref ELBIGW
+      VpcId: !Ref ELBVPC       
+
+# My-IGW VPC Attach
+  MyIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref MyIGW
+      VpcId: !Ref MyVPC     
+
+# -------------- RT 생성, 서브넷 연결, 라우팅 편집 --------------#
+# ELB
+  ELBRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ELB-RT
+      VpcId: !Ref ELBVPC      
+
+  ELBAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref ELBRT
+      SubnetId: !Ref ELBPublicSN1
+
+  ELBAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref ELBRT
+      SubnetId: !Ref ELBPublicSN2
+
+  ELBDefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: ELBIGWAttach
+    Properties:
+      RouteTableId: !Ref ELBRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref ELBIGW
+
+# My
+  MyRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: My-RT
+      VpcId: !Ref MyVPC
+
+  MyAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref MyRT
+      SubnetId: !Ref MyPublicSN
+
+  MyDefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: MyIGWAttach
+    Properties:
+      RouteTableId: !Ref MyRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref MyIGW
+
+
+# -------------- EC2 생성 --------------#
+  MySG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: MySG
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: udp
+        FromPort: '161'
+        ToPort: '161'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      VpcId: !Ref ELBVPC  
+
+  MyEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId:  ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref MyPublicSN
+          GroupSet: 
+            - !Ref MySG
+          AssociatePublicIpAddress: true
+      Tags:
+        - Key: Name
+          Value: My-EC2
+
+  ELBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ELBSG
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: udp
+        FromPort: '161'
+        ToPort: '161'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      VpcId: !Ref ELBVPC        
+
+# EC2 생성
+  ELBEC21:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId:  ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref ELBPublicSN1
+          GroupSet: 
+            - !Ref ELBSG
+          AssociatePublicIpAddress: true
+      Tags:
+        - Key: Name
+          Value: ELB-EC2-1
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #! /bin/bash
+            yun update -y
+            yum install -y httpd
+            systemctl enable --now httpd
+            echo "This is WEB1" > /var/www/html/index.html
+
+  ELBEC22:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId:  ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref ELBPublicSN2
+          GroupSet: 
+            - !Ref ELBSG
+          AssociatePublicIpAddress: true
+      Tags:
+        - Key: Name
+          Value: ELB-EC2-2
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #! /bin/bash
+            yun update -y
+            yum install -y httpd
+            systemctl enable --now httpd
+            echo "This is WEB2" > /var/www/html/index.html
+
+# ----------------- ALB -----------------#
+# ALB 타겟 그룹
+  ALBTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      HealthCheckPort: 80
+      HealthCheckProtocol: HTTP
+      Name: ALBTG
+      Port: 80
+      Protocol: HTTP
+      Targets:
+        - Id: !Ref ELBEC21
+          Port: 80
+        - Id: !Ref ELBEC22
+          Port: 80
+      VpcId: !Ref ELBVPC
+
+# dev 타겟 그룹
+  devTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      HealthCheckPort: 80
+      HealthCheckProtocol: HTTP
+      Name: devTG
+      Port: 80
+      Protocol: HTTP
+      Targets:
+        - Id: !Ref ELBEC21
+          Port: 80
+      VpcId: !Ref ELBVPC
+
+# mgt 타겟 그룹
+  mgtTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      HealthCheckPort: 80
+      HealthCheckProtocol: HTTP
+      Name: mgtTG
+      Port: 80
+      Protocol: HTTP
+      Targets:
+        - Id: !Ref ELBEC22
+          Port: 80
+      VpcId: !Ref ELBVPC
+
+# ALB 생성
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: ALB
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ELBSG
+      Subnets:
+        - !Ref ELBPublicSN1
+        - !Ref ELBPublicSN2
+      Type: application
+
+# ALB 리스너 생성
+  ALBListner:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions: 
+        - Type: forward
+          TargetGroupArn: !Ref ALBTG
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP  
+
+# dev 리스너 규칙 생성
+  devRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions: 
+        - Type: forward
+          TargerGroupArn: !Ref devTG
+      Conditions:
+        - Field: path-pattern
+          Values: 
+            - /dev/*
+      ListenerArn: !Ref ALBListner
+      Priority: 1
+
+# mgt 리스너 규칙 생성
+  mgtRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions: 
+        - Type: forward
+          TargerGroupArn: !Ref mgtTG
+      Conditions: 
+        - Field: path-pattern
+          Values: 
+            - /mgt/*
+      ListenerArn: !Ref ALBListner
+      Priority: 2
+
+# ----------------- NLB -----------------#
+# NLB 타겟 그룹
+  NLBTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      Name: NLBTG
+      Port: 80
+      Protocol: TCP
+      Targets:
+        - Id: !Ref ELBEC21
+          Port: 80
+        - Id: !Ref ELBEC22
+          Port: 80
+      VpcId: !Ref ELBVPC
+
+# NLB 생성
+  NLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: network
+      Name: NLB
+      Scheme: internet-facing
+      Subnets:
+        - !Ref ELBPublicSN1
+        - !Ref ELBPublicSN2
+
+# NLB 리스너
+  NLBListner:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref NLBTG
+      LoadBalancerArn: !Ref NLB
+      Port: 80
+      Protocol: TCP
