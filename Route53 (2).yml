@@ -1,0 +1,260 @@
+Parameters: 
+  KeyName:
+    Description: key 
+    Type: AWS::EC2::KeyPair::KeyName
+
+Resources:
+# VPC 생성
+  MYVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: MY-VPC
+
+# 서브넷 생성
+  MYPublicSN1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref MYVPC
+      Tags:
+        - Key: Name
+          Value: MY-Public-SN1
+
+  MYPublicSN2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 2, !GetAZs '' ]
+      CidrBlock: 10.0.1.0/24
+      VpcId: !Ref MYVPC
+      Tags:
+        - Key: Name
+          Value: MY-Public-SN2
+
+# IGW 생성  
+  MYIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: MY-IGW
+
+# IGW VPC Attach
+  MYIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref MYIGW
+      VpcId: !Ref MYVPC          
+
+# RT 생성, 서브넷 연결, 라우팅 편집
+# MY
+  MYRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: MY-RT
+      VpcId: !Ref MYVPC      
+
+  MYAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref MYRT
+      SubnetId: !Ref MYPublicSN1
+
+  MYAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref MYRT
+      SubnetId: !Ref MYPublicSN2
+
+  MYDefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: MYIGWAttach
+    Properties:
+      RouteTableId: !Ref MYRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref MYIGW
+
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      VpcId: !Ref MYVPC        
+
+# EC2 생성
+  MYEC21:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId:  ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref MYPublicSN1
+          GroupSet: 
+            - !Ref SG
+          AssociatePublicIpAddress: true
+      Tags:
+        - Key: Name
+          Value: MY-EC2-1
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #! /bin/bash
+            yun update -y
+            yum install -y httpd
+            systemctl enable --now httpd
+            echo "This is WEB1" > /var/www/html/index.html
+
+  MYEC22:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId:  ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref MYPublicSN2
+          GroupSet: 
+            - !Ref SG
+          AssociatePublicIpAddress: true
+      Tags:
+        - Key: Name
+          Value: MY-EC2-2
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #! /bin/bash
+            yun update -y
+            yum install -y httpd
+            systemctl enable --now httpd
+            echo "This is WEB2" > /var/www/html/index.html
+
+# ----------------- ALB -----------------#
+# ALB 타겟 그룹
+  ALBTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      HealthCheckPort: 80
+      HealthCheckProtocol: HTTP
+      Name: ALBTG
+      Port: 80
+      Protocol: HTTP
+      Targets:
+        - Id: !Ref MYEC21
+          Port: 80
+        - Id: !Ref MYEC22
+          Port: 80
+      VpcId: !Ref MYVPC
+
+# ALB 생성
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: ALB
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref SG
+      Subnets:
+        - !Ref MYPublicSN1
+        - !Ref MYPublicSN2
+      Type: application
+
+# ALB 리스너 생성
+  ALBListner:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions: 
+        - Type: forward
+          TargetGroupArn: !Ref ALBTG
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP      
+
+# ----------------- Route 53 -----------------#
+# yuntreee.cf 호스팅존 생성
+  PublicDNS:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: yuntreee.cf
+
+# ALB 레코드 생성
+  ALBAliasRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Type: A
+      Name: alb.yuntreee.cf
+      HostedZoneId: !Ref PublicDNS
+      AliasTarget:
+        DNSName: !GetAtt ALB.DNSName
+        HostedZoneId: !GetAtt ALB.CanonicalHostedZoneID
+      
+# Health Check를 통한 장애조치 서버
+  PrimaryHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        IPAddress: !GetAtt MYEC21.PublicIp
+        Port: 80
+        Type: HTTP
+        ResourcePath: '/index.html'
+      HealthCheckTags:
+        - Key: Name
+          Value: Primary
+
+  SubHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        IPAddress: !GetAtt MYEC22.PublicIp
+        Port: 80
+        Type: HTTP
+        ResourcePath: '/index.html'
+      HealthCheckTags:
+        - Key: Name
+          Value: Sub        
+
+  PrimaryFailoverRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Type: A
+      Name: www.yuntreee.cf
+      HostedZoneId: !Ref PublicDNS
+      ResourceRecords:
+        - !GetAtt MYEC21.PublicIp
+      Failover: PRIMARY
+      HealthCheckId: !Ref PrimaryHC
+      #Name과 type이 같은 레코드가 있으면 Identifier 명시
+      SetIdentifier: 1
+      #HealthCheck가 있으면 TTL 명시
+      TTL: 30
+
+  SecondaryFailoverRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Type: A
+      Name: www.yuntreee.cf
+      HostedZoneId: !Ref PublicDNS
+      ResourceRecords:
+        - !GetAtt MYEC22.PublicIp
+      Failover: SECONDARY
+      HealthCheckId: !Ref SubHC
+      SetIdentifier: 2
+      TTL: 30
