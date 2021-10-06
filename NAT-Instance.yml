@@ -1,0 +1,236 @@
+Parameters:
+  KeyName:
+    Description: Key
+    Type: AWS::EC2::KeyPair::KeyName
+  
+Resources:
+  # VPC 생성
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.40.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: VPC
+  
+  # Public SN 생성
+  PublicSN:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.40.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-SN
+      VpcId: !Ref VPC
+
+  # Private SN 생성
+  PrivateSN:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 2, !GetAZs '' ]
+      CidrBlock: 10.40.2.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: Private-SN
+      VpcId: !Ref VPC
+
+  # IGW 생성
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IGW
+
+  # VPC에 IGW 연결
+  AttachIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref IGW
+      VpcId: !Ref VPC
+
+  # 퍼블릭, 프라이빗 라우팅 테이블 생성
+  PublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Public-RT
+      VpcId: !Ref VPC
+  
+  PrivateRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Private-RT
+      VpcId: !Ref VPC
+
+  # 라우팅 테이블을 서브넷에 연결
+  PublicRouteAssociate:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRT
+      SubnetId: !Ref PublicSN
+
+  PrivaetRouteAssociate:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRT
+      SubnetId: !Ref PrivateSN
+
+  # Public-IGW 라우팅
+  IGWRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+      RouteTableId: !Ref PublicRT
+
+
+  # 보안그룹 생성
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG
+      GroupName: SG
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+      VpcId: !Ref VPC
+
+  # EIP
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  # ENI
+  ENI:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: "NAT-Instance-ENI"
+      GroupSet:
+        - !Ref SG
+      PrivateIpAddress: 10.40.1.100
+      SubnetId: !Ref PublicSN
+      Tags:
+        - Key: Name
+          Value: NAT-Instance-ENI
+
+  # ENI-EIP 연결
+  AssociateEIP:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt EIP.AllocationId
+      NetworkInterfaceId: !Ref ENI
+
+  # NAT Instance 생성
+  NATInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      # amzn-ami-vpc-nat
+      ImageId: ami-00550ccc38e992b78
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        # eth 0
+        - DeviceIndex: 0
+          NetworkInterfaceId: !Ref ENI
+      # 소스/대상 확인 비활성화
+      SourceDestCheck: false
+      UserData:
+        Fn::Base64: |
+          #! /bin/bash
+          hostname NAT-Instance
+          yum -y install tcpdump iptraf
+      Tags:
+        - Key: Name
+          Value: NAT-Instance
+
+  # Private-ENI 라우팅
+  ENIRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NetworkInterfaceId: !Ref ENI
+      RouteTableId: !Ref PrivateRT
+
+  # Private EC2 생성
+  PrivateInstance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        # eth 0
+        - DeviceIndex: 0
+          SubnetId: !Ref PrivateSN
+          GroupSet: 
+            - !Ref SG
+          # 퍼블릭IP 비활성화
+          AssociatePublicIpAddress: false
+          PrivateIpAddress: 10.40.2.101
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            (
+            echo "qwe123"
+            echo "qwe123"
+            ) | passwd --stdin root
+            sed -i "s/^PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config
+            sed -i "s/^#PermitRootLogin yes/PermitRootLogin yes/g" /etc/ssh/sshd_config
+            service sshd restart
+      Tags:
+        - Key: Name
+          Value: Private-EC2-1
+
+  PrivateInstance2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        # eth 0
+        - DeviceIndex: 0
+          SubnetId: !Ref PrivateSN
+          GroupSet: 
+            - !Ref SG
+          # 퍼블릭IP 비활성화
+          AssociatePublicIpAddress: false
+          PrivateIpAddress: 10.40.2.102
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            (
+            echo "qwe123"
+            echo "qwe123"
+            ) | passwd --stdin root
+            sed -i "s/^PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config
+            sed -i "s/^#PermitRootLogin yes/PermitRootLogin yes/g" /etc/ssh/sshd_config
+            service sshd restart
+      Tags:
+        - Key: Name
+          Value: Private-EC2-2
