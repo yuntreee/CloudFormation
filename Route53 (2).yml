@@ -4,257 +4,481 @@ Parameters:
     Type: AWS::EC2::KeyPair::KeyName
 
 Resources:
-# VPC 생성
-  MYVPC:
+# --------------VPC 생성--------------#
+# AWS-VPC 생성
+  AWSVPC:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: 10.0.0.0/16
+      CidrBlock: 10.70.0.0/16
       EnableDnsHostnames: true
       EnableDnsSupport: true
       Tags:
         - Key: Name
-          Value: MY-VPC
+          Value: AWS-VPC
 
-# 서브넷 생성
-  MYPublicSN1:
+# IDC DHCP Option
+  IDCDHCP:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainNameServers:
+       - 10.80.1.100
+       - 8.8.8.8
+
+  IDCDHCPAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      DhcpOptionsId: !Ref IDCDHCP
+      VpcId: !Ref IDCVPC
+
+# IDC-VPC 생성
+  IDCVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.80.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: IDC-VPC
+
+
+#--------------서브넷 생성-------------#
+# AWS 서브넷 생성
+  AWSSN1:
     Type: AWS::EC2::Subnet
     Properties:
       AvailabilityZone: !Select [ 0, !GetAZs '' ]
-      CidrBlock: 10.0.0.0/24
-      VpcId: !Ref MYVPC
+      CidrBlock: 10.70.1.0/24
+      VpcId: !Ref AWSVPC
+      MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: MY-Public-SN1
+          Value: AWS-Public-SN1
 
-  MYPublicSN2:
+  AWSSN2:
     Type: AWS::EC2::Subnet
     Properties:
       AvailabilityZone: !Select [ 2, !GetAZs '' ]
-      CidrBlock: 10.0.1.0/24
-      VpcId: !Ref MYVPC
+      CidrBlock: 10.70.2.0/24
+      VpcId: !Ref AWSVPC
+      MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: MY-Public-SN2
+          Value: AWS-Public-SN2
 
-# IGW 생성  
-  MYIGW:
+# IDC 서브넷 생성
+  IDCSN:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.80.1.0/24
+      VpcId: !Ref IDCVPC
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: AWS-Public-SN2
+
+
+#---------------IGW 생성---------------#
+# AWS-VPC IGW
+  AWSIGW:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: MY-IGW
+          Value: AWS-IGW
 
-# IGW VPC Attach
-  MYIGWAttach:
+# IDC-VPC IGW
+  IDCIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IDC-IGW
+
+
+#-------------IGW-VPC 연결--------------#
+# AWS-IGW
+  AWSIGWAttach:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
-      InternetGatewayId: !Ref MYIGW
-      VpcId: !Ref MYVPC          
+      InternetGatewayId: !Ref AWSIGW
+      VpcId: !Ref AWSVPC      
 
-# RT 생성, 서브넷 연결, 라우팅 편집
-# MY
-  MYRT:
+# IDC-IGW
+  IDCIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref IDCIGW
+      VpcId: !Ref IDCVPC
+
+
+#-----RT 생성, 서브넷 연결, IGW 라우팅 추가-----#
+# AWS RT
+  AWSRT:
     Type: AWS::EC2::RouteTable
     Properties:
       Tags:
         - Key: Name
-          Value: MY-RT
-      VpcId: !Ref MYVPC      
+          Value: AWS-RT
+      VpcId: !Ref AWSVPC   
 
-  MYAssociation1:
+  AWSRTAssociation1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      RouteTableId: !Ref MYRT
-      SubnetId: !Ref MYPublicSN1
-
-  MYAssociation2:
+      RouteTableId: !Ref AWSRT
+      SubnetId: !Ref AWSSN1
+  
+  AWSRTAssociation2:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      RouteTableId: !Ref MYRT
-      SubnetId: !Ref MYPublicSN2
+      RouteTableId: !Ref AWSRT
+      SubnetId: !Ref AWSSN2
 
-  MYDefaultPublicRoute:
+  AWSDefaultRoute:
     Type: AWS::EC2::Route
-    DependsOn: MYIGWAttach
+    DependsOn: AWSIGWAttach
     Properties:
-      RouteTableId: !Ref MYRT
+      RouteTableId: !Ref AWSRT
       DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref MYIGW
+      GatewayId: !Ref AWSIGW
 
-  SG:
+# IDC RT
+  IDCRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IDC-RT
+      VpcId: !Ref IDCVPC   
+
+  IDCRTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref IDCRT
+      SubnetId: !Ref IDCSN
+
+  IDCDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IDCIGWAttach
+    Properties:
+      RouteTableId: !Ref IDCRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IDCIGW
+
+
+#---------------보안 그룹 생성--------------#
+# AWS-VPC SG
+  AWSSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: SG
+      GroupDescription: AWS-SG
       SecurityGroupIngress:
       - IpProtocol: tcp
         FromPort: '80'
         ToPort: '80'
         CidrIp: 0.0.0.0/0
+
       - IpProtocol: tcp
         FromPort: '22'
         ToPort: '22'
         CidrIp: 0.0.0.0/0
-      VpcId: !Ref MYVPC        
 
-# EC2 생성
-  MYEC21:
+      - IpProtocol: tcp
+        FromPort: '53'
+        ToPort: '53'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: udp
+        FromPort: '53'
+        ToPort: '53'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: icmp
+        FromPort: '-1'
+        ToPort: '-1'
+        CidrIp: 0.0.0.0/0
+      
+      Tags:
+        - Key: Name
+          Value: AWS-SG
+      VpcId: !Ref AWSVPC 
+
+# IDC-VPC SG
+  IDCSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: IDC-SG
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: tcp
+        FromPort: '53'
+        ToPort: '53'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: udp
+        FromPort: '53'
+        ToPort: '53'
+        CidrIp: 0.0.0.0/0
+
+      - IpProtocol: icmp
+        FromPort: '-1'
+        ToPort: '-1'
+        CidrIp: 0.0.0.0/0
+      
+      Tags:
+        - Key: Name
+          Value: IDC-SG
+      VpcId: !Ref IDCVPC 
+
+
+#-------------EC2 생성----------------#
+# AWS-WEB1
+  AWSWEB1:
     Type: AWS::EC2::Instance
     Properties:
       ImageId:  ami-08c64544f5cfcddd0
       InstanceType: t2.micro
       KeyName: !Ref KeyName
       NetworkInterfaces:
+        # eth 0
         - DeviceIndex: 0
-          SubnetId: !Ref MYPublicSN1
+          SubnetId: !Ref AWSSN1
           GroupSet: 
-            - !Ref SG
-          AssociatePublicIpAddress: true
+            - !Ref AWSSG
+          # 고정 사설IP
+          PrivateIpAddress: 10.70.1.100
       Tags:
         - Key: Name
-          Value: MY-EC2-1
+          Value: AWS-WEB1
       UserData:
         Fn::Base64:
           !Sub |
             #! /bin/bash
+            hostnamectl set-hostname AWS_WEB1
             yun update -y
             yum install -y httpd
             systemctl enable --now httpd
-            echo "This is WEB1" > /var/www/html/index.html
+            echo "This is AWS-WEB1" > /var/www/html/index.html
 
-  MYEC22:
+# AWS-WEB2
+  AWSWEB2:
     Type: AWS::EC2::Instance
     Properties:
       ImageId:  ami-08c64544f5cfcddd0
       InstanceType: t2.micro
       KeyName: !Ref KeyName
       NetworkInterfaces:
+        # eth 0
         - DeviceIndex: 0
-          SubnetId: !Ref MYPublicSN2
+          SubnetId: !Ref AWSSN2
           GroupSet: 
-            - !Ref SG
-          AssociatePublicIpAddress: true
+            - !Ref AWSSG
+          # 고정 사설IP
+          PrivateIpAddress: 10.70.2.100
       Tags:
         - Key: Name
-          Value: MY-EC2-2
+          Value: AWS-WEB2
       UserData:
         Fn::Base64:
           !Sub |
             #! /bin/bash
+            hostnamectl set-hostname AWS_WEB2
             yun update -y
             yum install -y httpd
             systemctl enable --now httpd
-            echo "This is WEB2" > /var/www/html/index.html
+            echo "This is AWS-WEB2" > /var/www/html/index.html
 
-# ----------------- ALB -----------------#
-# ALB 타겟 그룹
-  ALBTG:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+# IDC-DNSSRV
+  IDCDNSSRV:
+    Type: AWS::EC2::Instance
     Properties:
-      HealthCheckEnabled: true
-      HealthCheckPath: /
-      HealthCheckPort: 80
-      HealthCheckProtocol: HTTP
-      Name: ALBTG
-      Port: 80
-      Protocol: HTTP
-      Targets:
-        - Id: !Ref MYEC21
-          Port: 80
-        - Id: !Ref MYEC22
-          Port: 80
-      VpcId: !Ref MYVPC
+      ImageId:  ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        # eth 0
+        - DeviceIndex: 0
+          SubnetId: !Ref IDCSN
+          GroupSet: 
+            - !Ref IDCSG
+          # 고정 사설IP
+          PrivateIpAddress: 10.80.1.100
+      Tags:
+        - Key: Name
+          Value: IDC-DNSSRV
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #! /bin/bash
+            hostnamectl set-hostname DNS_SRV
+            yun update -y
+            yum install -y bind bind-utils bind-libs
 
-# ALB 생성
-  ALB:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+            sed -i "s/listen-on port 53 { 127.0.0.1; };/listen-on port 53 { any; };/g" /etc/named.conf
+            sed -i "s/allow-query     { localhost; };/allow-query     { any; };/g"  /etc/named.conf
+            sed -i "s/dnssec-enable yes;/dnssec-enable no;/g" /etc/named.conf
+            sed -i "s/dnssec-validation yes;/dnssec-validation no;/g" /etc/named.conf
+
+            echo -e \
+            'zone "idcneta.internal" IN {\n'\
+            '  type master;\n'\
+            '  file "idcneta.zone";\n};\n\n'\
+            'zone "awsneta.internal" IN {\n'\
+            '  type forward;\n'\
+            '  forward only;\n'\
+            '  forwarders { 10.70.1.250; 10.70.2.250; };\n};\n\n'\
+            >> /etc/named.rfc1912.zones
+
+            echo -e \
+            '$TTL 1D\n'\
+            '@ IN SOA ns.idcneta.internal. admin.idcneta.internal. (\n'\
+            '        20211002 1D 1H 1W 3H )\n\n'\
+            '        IN  NS  ns.idcneta.com.\n'\
+            'ns      IN  A   10.80.1.100\n'\
+            'dnssrv  IN  A   10.80.1.100\n'\
+            'websrv  IN  A   10.80.1.200\n'\
+            > /var/named/idcneta.zone
+
+            systemctl enable --now named
+
+# IDC-WEB
+  IDCWEB:
+    Type: AWS::EC2::Instance
     Properties:
-      Name: ALB
-      Scheme: internet-facing
-      SecurityGroups:
-        - !Ref SG
-      Subnets:
-        - !Ref MYPublicSN1
-        - !Ref MYPublicSN2
-      Type: application
+      ImageId:  ami-08c64544f5cfcddd0
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        # eth 0
+        - DeviceIndex: 0
+          SubnetId: !Ref IDCSN
+          GroupSet: 
+            - !Ref IDCSG
+          # 고정 사설IP
+          PrivateIpAddress: 10.80.1.200
+      Tags:
+        - Key: Name
+          Value: IDC-WEB
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #! /bin/bash
+            hostnamectl set-hostname IDC-WEB
+            yun update -y
+            yum install -y httpd
+            systemctl enable --now httpd
+            echo "This is IDC-WEB" > /var/www/html/index.html
 
-# ALB 리스너 생성
-  ALBListner:
-    Type: AWS::ElasticLoadBalancingV2::Listener
+
+#----------------VPC Peering------------------#
+# VPC Peering 생성
+  VPCPeering:
+    Type: AWS::EC2::VPCPeeringConnection
     Properties:
-      DefaultActions: 
-        - Type: forward
-          TargetGroupArn: !Ref ALBTG
-      LoadBalancerArn: !Ref ALB
-      Port: 80
-      Protocol: HTTP      
+      PeerVpcId: !Ref AWSVPC
+      VpcId: !Ref IDCVPC
 
-# ----------------- Route 53 -----------------#
-# yuntreee.cf 호스팅존 생성
-  PublicDNS:
+# IDC RT에 추가  
+  IDCPeeringRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 10.70.0.0/16
+      RouteTableId: !Ref IDCRT
+      VpcPeeringConnectionId: !Ref VPCPeering
+
+# AWS RT에 추가  
+  AWSPeeringRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 10.80.0.0/16
+      RouteTableId: !Ref AWSRT
+      VpcPeeringConnectionId: !Ref VPCPeering
+
+
+#------------------Route 53------------------#
+# 프라이빗 호스팅 영역 생성
+  HostedZone:
     Type: AWS::Route53::HostedZone
     Properties:
-      Name: yuntreee.cf
+      Name: awsneta.internal
+      VPCs:
+        - VPCId: !Ref AWSVPC
+          VPCRegion: !Ref AWS::Region
 
-# ALB 레코드 생성
-  ALBAliasRecord:
+# 각 웹으로 라우팅 생성
+  WEB1Record:
     Type: AWS::Route53::RecordSet
     Properties:
-      Type: A
-      Name: alb.yuntreee.cf
-      HostedZoneId: !Ref PublicDNS
-      AliasTarget:
-        DNSName: !GetAtt ALB.DNSName
-        HostedZoneId: !GetAtt ALB.CanonicalHostedZoneID
-      
-# Health Check를 통한 장애조치 서버
-  PrimaryHC:
-    Type: AWS::Route53::HealthCheck
-    Properties:
-      HealthCheckConfig:
-        IPAddress: !GetAtt MYEC21.PublicIp
-        Port: 80
-        Type: HTTP
-        ResourcePath: '/index.html'
-      HealthCheckTags:
-        - Key: Name
-          Value: Primary
-
-  SubHC:
-    Type: AWS::Route53::HealthCheck
-    Properties:
-      HealthCheckConfig:
-        IPAddress: !GetAtt MYEC22.PublicIp
-        Port: 80
-        Type: HTTP
-        ResourcePath: '/index.html'
-      HealthCheckTags:
-        - Key: Name
-          Value: Sub        
-
-  PrimaryFailoverRecord:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      Type: A
-      Name: www.yuntreee.cf
-      HostedZoneId: !Ref PublicDNS
+      HostedZoneId: !Ref HostedZone
+      Name: websrv1.awsneta.internal
       ResourceRecords:
-        - !GetAtt MYEC21.PublicIp
-      Failover: PRIMARY
-      HealthCheckId: !Ref PrimaryHC
-      #Name과 type이 같은 레코드가 있으면 Identifier 명시
-      SetIdentifier: 1
-      #HealthCheck가 있으면 TTL 명시
-      TTL: 30
+        - 10.70.1.100
+      Type: A
+      TTL: 300
 
-  SecondaryFailoverRecord:
+  WEB2Record:
     Type: AWS::Route53::RecordSet
     Properties:
-      Type: A
-      Name: www.yuntreee.cf
-      HostedZoneId: !Ref PublicDNS
+      HostedZoneId: !Ref HostedZone
+      Name: websrv2.awsneta.internal
       ResourceRecords:
-        - !GetAtt MYEC22.PublicIp
-      Failover: SECONDARY
-      HealthCheckId: !Ref SubHC
-      SetIdentifier: 2
-      TTL: 30
+        - 10.70.2.100
+      Type: A
+      TTL: 300
+
+# 인바운드 엔드포인트
+  InboundEndpoint:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Properties:
+      Direction: INBOUND
+      IpAddresses:
+        - Ip: 10.70.1.250
+          SubnetId: !Ref AWSSN1
+        - Ip: 10.70.2.250
+          SubnetId: !Ref AWSSN2
+      Name: Inbound Endpoint
+      SecurityGroupIds:
+        - !Ref AWSSG
+
+# 아웃바운드 엔드포인트
+  OutboundEndpoint:
+    Type: AWS::Route53Resolver::ResolverEndpoint
+    Properties:
+      Direction: OUTBOUND
+      IpAddresses:
+        - Ip: 10.70.1.251
+          SubnetId: !Ref AWSSN1
+        - Ip: 10.70.2.251
+          SubnetId: !Ref AWSSN2
+      Name: Outbound Endpoint
+      SecurityGroupIds:
+        - !Ref AWSSG
+
+# 아웃바운드 규칙
+  OutboundRule:
+    Type: AWS::Route53Resolver::ResolverRule
+    Properties:
+      DomainName: idcneta.internal
+      Name: Outbound Rule
+      ResolverEndpointId: !Ref OutboundEndpoint
+      RuleType: FORWARD
+      TargetIps:
+        - Ip: 10.80.1.100
+          Port: 53
+
+# 아웃바운드 규칙 VPC 연결
+  LogicalID:
+    Type: AWS::Route53Resolver::ResolverRuleAssociation
+    Properties:
+      ResolverRuleId: !Ref OutboundRule
+      VPCId: !Ref AWSVPC
