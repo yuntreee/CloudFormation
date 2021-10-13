@@ -201,9 +201,8 @@ Resources:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId: !Ref IDCPrivateRT
-      DestinationCidrBlock: 0.0.0.0/0
+      DestinationCidrBlock: 10.50.0.0/16
       NetworkInterfaceId: !Ref IDCCGWENI
-
 
   IDCRTAssociation2:
     Type: AWS::EC2::SubnetRouteTableAssociation
