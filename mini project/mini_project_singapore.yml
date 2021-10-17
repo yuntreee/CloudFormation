@@ -5,7 +5,7 @@ Parameters:
 
 Resources:
 # -------------------VPC 생성--------------------#
-# Seoul-VPC
+# Singapore-VPC
   AWSVPC:
     Type: AWS::EC2::VPC
     Properties:
