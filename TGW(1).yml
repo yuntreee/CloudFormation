@@ -69,7 +69,7 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: VPC0-SN3
+          Value: VPC0-SN3 
 
   VPC0SN4:
     Type: AWS::EC2::Subnet
