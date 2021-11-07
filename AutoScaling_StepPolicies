@@ -1,0 +1,344 @@
+Parameters:
+  Key:
+    Description: KeyPair
+    Type: AWS::EC2::KeyPair::KeyName
+  
+  VPCCidr:
+    Description: Cidr Block for VPC
+    Type: String
+    Default: 10.0.0.0/16
+  PublicSubnet1Cidr:
+    Description: Cidr Block for Public Subnet
+    Type: String
+    Default: 10.0.1.0/24
+  PublicSubnet2Cidr:
+    Description: Cidr Block for Public Subnet
+    Type: String
+    Default: 10.0.2.0/24
+
+  BlogID:
+    Description: A unique identifier for your blog.
+    Type: String
+    AllowedPattern: "[A-Za-z0-9\\-]+"
+    ConstraintDescription: Only letters, digits or dash allowed.
+  BlogTitle:
+    Description: The title of the blog.
+    Type: String
+    Default: Amazon Web Services in Action - Example
+  AdminUsername:
+    Description: A username for admin.
+    Type: String
+    Default: admin
+  AdminPassword:
+    Description: A password for admin.
+    Type: String
+    NoEcho: 'true'
+  AdminEMail:
+    Description: The email address of the administrator.
+    Type: String
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCidr
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: VPC
+
+#------------------- 서브넷 -------------------#
+  PublicSN1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet1Cidr
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-SN-1
+
+  PublicSN2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone: !Select [ 2, !GetAZs ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-SN-2
+
+#------------------- IGW -------------------#
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IGW
+  Attachigw:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref IGW
+      VpcId: !Ref VPC
+
+#------------------- RT -------------------#
+  PublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public RT
+
+  PublicSubnet1RTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRT
+      SubnetId:
+        !Ref PublicSN1
+  PublicSubnet2RTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRT
+      SubnetId:
+        !Ref PublicSN2
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: Attachigw
+    Properties:
+      RouteTableId: !Ref PublicRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+
+#------------------- 보안그룹 -------------------#
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow 22, 80
+      GroupName: webaccess
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+#------------------- RDS -------------------#
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: DB Subnet Group
+      SubnetIds: 
+        - !Ref PublicSN1
+        - !Ref PublicSN2
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 20
+      BackupRetentionPeriod: 0
+      DBInstanceClass: db.t2.micro
+      DBInstanceIdentifier: !Ref BlogID
+      DBName: wordpress
+      VPCSecurityGroups:
+        - !Ref SG
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: MySQL
+      EngineVersion: "5.6.51"
+      MasterUserPassword: wordpress
+      MasterUsername: wordpress
+
+#------------------- S3 -------------------#
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BlogID
+
+  IAMUser:
+    Type: AWS::IAM::User
+    Properties:
+      Path: "/"
+      Policies:
+      - PolicyName: UploadToS3
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:*
+            Resource:
+            - Fn::Join:
+              - ''
+              - - 'arn:aws:s3:::'
+                - Ref: BlogID
+                - "/*"
+
+  IAMAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName:
+        Ref: IAMUser
+
+#------------------- ALB -------------------#
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: webserverALB
+      Type: application
+      SecurityGroups:
+        - !Ref SG
+      Subnets:
+        - !Ref PublicSN1
+        - !Ref PublicSN2
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VPC
+      Name: webtest
+      Port: 80
+      Protocol: HTTP
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup   
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+
+
+#------------------- Auto Scaling -------------------#
+  LaunchConfiguration:
+    DependsOn: ALB, DBInstance
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      KeyName: !Ref Key
+      AssociatePublicIpAddress: true
+      ImageId: ami-04e8dfc09b22389ad
+      InstanceType: t2.micro
+      LaunchConfigurationName: wordpress-LC
+      SecurityGroups:
+        - !Ref SG
+      UserData: 
+        Fn::Base64: 
+          !Sub |
+            #! /bin/bash
+            yum -y update
+            yum -y install httpd
+            yum -y install mysql
+            wget https://wordpress.org/latest.tar.gz
+            tar -xzf latest.tar.gz
+            cp wordpress/wp-config-sample.php wordpress/wp-config.php
+            cd wordpress
+            sed -i "s/'database_name_here'/'wordpress'/g" wp-config.php
+            sed -i "s/'username_here'/'wordpress'/g" wp-config.php
+            sed -i "s/'password_here'/'wordpress'/g" wp-config.php
+            sed -i "s/'localhost'/'${DBInstance.Endpoint.Address}'/g" wp-config.php
+            echo "define('AWS_ACCESS_KEY_ID', '${IAMAccessKey}');" >> wp-config.php
+            echo "define('AWS_SECRET_ACCESS_KEY', '${IAMAccessKey.SecretAccessKey}');" >> wp-config.php
+            
+            cd ..
+            mv wordpress/* /var/www/html/
+            cd /var/www/html
+
+
+            amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+            curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+            
+            php wp-cli.phar core install --url=${ALB.DNSName} --title=${BlogTitle} --admin_user=${AdminUsername} --admin_password=${AdminPassword} --admin_email=${AdminEMail}
+            php wp-cli.phar plugin install --activate amazon-web-services
+            php wp-cli.phar plugin install --activate amazon-s3-and-cloudfront
+
+            chown -R apache.apache /var/www/html
+            chmod 2775 /var/www/html
+
+            systemctl enable --now httpd
+
+  ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: ASG
+      VPCZoneIdentifier:
+        - !Ref PublicSN1
+        - !Ref PublicSN2
+      Cooldown: 10
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MaxSize: 4
+      MinSize: 1
+      DesiredCapacity: 1
+      # 오토스케일링그룹을 ELB의 타겟 그룹으로 지정
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      Tags:
+        - Key: Name
+          Value: web-asg
+          PropagateAtLaunch: true     
+
+  ScalingUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref ASG
+      Cooldown: '60'
+      ScalingAdjustment: '1'
+  CPUHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: '60'
+      AlarmDescription: Alarm if CPU load is high.
+      Period: '60'
+      AlarmActions: 
+        - !Ref ScalingUpPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref ASG
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+
+  ScalingDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref ASG
+      Cooldown: '60'
+      ScalingAdjustment: "-1"
+  CPULowAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: '20'
+      AlarmDescription: Alarm if CPU load is low.
+      Period: '60'
+      AlarmActions: 
+        - !Ref ScalingDownPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref ASG
+      ComparisonOperator: LessThanThreshold
+      MetricName: CPUUtilization
